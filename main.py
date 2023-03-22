@@ -8,12 +8,17 @@ rob_size = 256
 # Initialize clocks one below their initial time
 clock = {'fe':-1, 'de':0, 're':1, 'di':2, 'is':3, 'wb':4, 'co':5}
 
-    # Queues
+    # Stage Queues
 fetchDecode_queue = []
 decodeRename_queue = []
 renameDispatch_queue = []
 issueWB_queue = []
+WBcommit_queue = []
+
+# Instruction queues
 issue_queue = []
+rob = []
+lsq = []
 
     # Prepare lines for processing
 with open("input/"+sys.argv[1]) as f: # import in file based on execution argument
@@ -26,13 +31,18 @@ for l in range(0,len(data)):
             data[l][i] = int(data[l][i])
         except ValueError:
             pass
+    # Attach PC to the instructions
+    if l != 0:
+        data[l].append(l)
+        
 instCount = len(data) - 1 # Total instructions
     #Process first line into parameters
 preg_count = data[0][0] # Number of physical registers in system
 issue_width = data[0][1] # Width of pipeline
 
     # Initalize free list, ready table and map table, first 32 elements are mapped
-overwrite_dict = {} # Not sure if correct, new:old format
+overwrite_dict = {} # Temporary buffer for tracking overwrites until time for ROB comes
+
 map_table = {}
 ready_table = {}
 free_list = [] 
@@ -70,7 +80,9 @@ def decode():
             case 'I':
                 instDict = {'inst':'I', 'read':[inst[1]], 'write':[inst[2]]}
                 decodeRename_queue.append(instDict)
+        instDict['pc'] = inst[4]
     clock['de'] += 1
+
 def rename():
     # Only perform if enough insts to continue, else stall
     if (len(free_list) >=  issue_width):
@@ -98,7 +110,17 @@ def dispatch():
         # Update ready table for destination entries
         for w in range(0,len(inst['write'])):
             ready_table[w] = False
+        # Send to IQ
         issue_queue.append(inst)
+        # Send to LSQ if Load/Store
+        if (inst['inst'] == 'L') | (inst['inst'] == 'S'):
+            lsq.append(inst)
+        # Send to ROB, but also track replacement
+        inst_rob = {k:v for k,v in inst.items()}
+        for w in inst_rob['write']:
+            inst_rob['replaced'] = overwrite_dict[w]
+            inst_rob['done'] = False
+        rob.append(inst_rob)
     clock['di'] += 1
 def issue():  
     global issue_queue
@@ -106,7 +128,9 @@ def issue():
         # Pre-sort by age in ascending order so oldest are always prioritized
         issue_queue = sorted(issue_queue, key=lambda d: d['age'])
         selected = 0 
-        for n in range(0,len(issue_queue)):
+        imax = len(issue_queue)
+        for n in range(0,imax):
+            print(len(issue_queue))
             if (selected >= issue_width): # Stop when you've selected N instructions
                 break
             inst = issue_queue[n-selected]
@@ -124,6 +148,25 @@ def issue():
             for d in dep_list:
                 ready_table[d] = True
     clock['is'] += 1
+def writeback():
+    if (len(issueWB_queue) >= issue_width):
+        for n in range(0,issue_width):
+            inst = issueWB_queue.pop(0)
+            # Mark instructions as done, dont do this for stores until commit
+            WBcommit_queue.append(inst)
+    clock['wb'] += 1
+def commit():
+    # Get first inst in ROB that's done
+    for c in range(0,len(rob)):
+        inst = rob[c]
+        committed = 0
+        if inst['done'] == True:
+            # Free the overwritten reg
+            inst = rob.pop(c)
+            free_list.append(inst['replaced'])
+            # Do 
+    clock['co'] += 1 
+
 #while (committedInsts < instCount):
 for t in range(0,1):
     fetch(fetchIndex)
@@ -131,7 +174,8 @@ for t in range(0,1):
     rename()
     dispatch()
     issue()
-    print(ready_table)
+    #commit()
+    print("ROB", rob, '\nLSQ', lsq)
 #    print(issue_queue)
 #    print(issueWB_queue)
 #    print(clock)
